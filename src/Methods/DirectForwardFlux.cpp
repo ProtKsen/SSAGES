@@ -116,7 +116,7 @@ namespace SSAGES
 		int success_count = 0, fail_count = 0;
 		// I dont pass the queue information between procs but I do syncronize 'successes' and 'failures'
 		//   as a reuslt all proc should have the same queue throughout the simulation
-		for (int i=0;i<world_.size();i++)
+		for (int i=0;i<world_.size();i++) 
 		{
 			int l,n,a,lprev,nprev,aprev;
 			// write config to lambda+1
@@ -135,7 +135,8 @@ namespace SSAGES
 					FFSConfigID newid = FFSConfigID(l,n,a,lprev,nprev,aprev);
 					WriteFFSConfiguration(snapshot,newid,1);
 				}
-				success_count++;
+				if ((i % comm_.size()) == comm_.rank())
+					success_count++;
 			}
 			if (failures[i] == true)
 			{ 
@@ -148,8 +149,10 @@ namespace SSAGES
 					FFSConfigID newid = FFSConfigID(l,n,a,lprev,nprev,aprev);
 					WriteFFSConfiguration(snapshot,newid,0);
 				}
-				fail_count++;
+				if ((i % comm_.size()) == comm_.rank())
+					fail_count++;
 			}
+			MPI_Barrier(comm_); // for correct process of WriteFFSConfiguration
 		}
 
 		//update trajectories

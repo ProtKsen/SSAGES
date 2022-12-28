@@ -151,8 +151,10 @@ namespace SSAGES
 					Lambda0ConfigLibrary.emplace_back(l,n,a,lprev,nprev,aprev);
 					WriteFFSConfiguration(snapshot,newid,1);
 				}
-				success_count++;
-			}    
+				if (i % comm_.size() == comm_.rank())
+					success_count++;
+			}
+			MPI_Barrier(comm_);
         }  
 
         // all procs update correctly
@@ -167,11 +169,11 @@ namespace SSAGES
         	N0SimTime_local++;  //or += frequency if FFS isn't called on every step!
 
         // Allreduce then increment total
-        MPI_Allreduce(&N0SimTime_local, &N0SimTime, 1, MPI_DOUBLE, MPI_SUM,world_);
+        MPI_Allreduce(&N0SimTime_local, &N0SimTime, 1, MPI_DOUBLE, MPI_SUM, world_);
         _N0TotalSimTime += N0SimTime;
 
         //print some info
-        if (success_local)
+        if (success_local && comm_.rank()==0)
 		{
         	std::cout << "Iteration: "<< iteration_ << ", proc " << world_.rank() << std::endl;
             std::cout << "Successful attempt. (cvvalue_previous: " << _cvvalue_previous << " cvvalue " << _cvvalue << " )" << std::endl;
@@ -182,9 +184,11 @@ namespace SSAGES
         // Check if the required number of initial configurations are created, if so print a message, and compute the initial flux.
         if (_N[0] >= _N0Target)
 		{
-            std::cout << "Initial flux calculation was successfully completed" << std::endl;
+			if (comm_.rank()==0)
+            	std::cout << "Initial flux calculation was successfully completed" << std::endl;
             // Call a function to compute the actual flux and output the data
-            WriteInitialFlux();
+			if (world_.rank() == 0)
+            	WriteInitialFlux();
             //responsible for setting _initialFluxFlag = false when finished
             _initialFluxFlag = false;
         } 
@@ -203,8 +207,10 @@ namespace SSAGES
 			std::cerr << "Error! Unable to write " << filename << std::endl;
 			MPI_Abort(world_, EXIT_FAILURE);
 		}
+		_N0TotalSimTime /= comm_.size();
 		_fluxA0 = (double) (_N[0] / _N0TotalSimTime);
-		file << "number of walkers: " << world_.size() << std::endl;
+		int numb_walkers = world_.size()/comm_.size();
+		file << "number of walkers: " << numb_walkers << std::endl;
 		file << "number of iterations: " << iteration_ << std::endl;
 		file << "Total simulation time: " << _N0TotalSimTime << std::endl;
 		file << "Initial flux: " << _fluxA0 << std::endl;
@@ -244,7 +250,12 @@ namespace SSAGES
         else
           filename = _output_directory + "/fail-l" + std::to_string(ffsconfig.l) + "-n" + std::to_string(ffsconfig.n) + ".dat";
 
- 		file.open(filename.c_str());
+		// all processes in the communicator except the first write data to the end of the file
+		if (comm_.rank() == 0)
+            	file.open(filename.c_str(),std::ios_base::out | std::ios_base::trunc);
+        else
+        	file.open(filename.c_str(),std::ios_base::out | std::ios_base::app);
+		
         if(!file)
 		{
 			std::cerr << "Error! Unable to write " << filename << "\n"; 
@@ -252,7 +263,11 @@ namespace SSAGES
 		}
 
         //first line gives ID of where it came from
-        file << ffsconfig.lprev << " " << ffsconfig.nprev << " " << ffsconfig.aprev << "\n";
+		//only first process in the communicator writes this line
+		if (comm_.rank() == 0)
+		{
+			file << ffsconfig.lprev << " " << ffsconfig.nprev << " " << ffsconfig.aprev << "\n";
+		}
 
         // Then write positions and velocities
  		for(size_t i = 0; i< atomID.size(); i++)
@@ -262,6 +277,7 @@ namespace SSAGES
  			file<<positions[i][0]<<" "<<positions[i][1]<<" "<<positions[i][2]<<" ";
  			file<<velocities[i][0]<<" "<<velocities[i][1]<<" "<<velocities[i][2]<<std::endl;
 		}
+		file.close();
     }
 
     void ForwardFlux::OpenTrajectoryFile(std::ofstream& file)
@@ -348,21 +364,18 @@ namespace SSAGES
                         atomindex = i;
                 }
 
-                if(atomindex < 0)
+				if(atomindex >= 0)
                 {
-                    std::cout<<"error, could not locate atomID "<<tokens[0]<<" from dumpfile"<<std::endl;
-					MPI_Abort(world_, EXIT_FAILURE);
+                	positions[atomindex][0] = std::stod(tokens[1]);
+                	positions[atomindex][1] = std::stod(tokens[2]);
+                	positions[atomindex][2] = std::stod(tokens[3]);
+                	velocities[atomindex][0] = std::stod(tokens[4]);
+                	velocities[atomindex][1] = std::stod(tokens[5]);
+                	velocities[atomindex][2] = std::stod(tokens[6]);
+
+                	for(auto& force : forces)
+                	    force.setZero();
 				}
-
-                positions[atomindex][0] = std::stod(tokens[1]);
-                positions[atomindex][1] = std::stod(tokens[2]);
-                positions[atomindex][2] = std::stod(tokens[3]);
-                velocities[atomindex][0] = std::stod(tokens[4]);
-                velocities[atomindex][1] = std::stod(tokens[5]);
-                velocities[atomindex][2] = std::stod(tokens[6]);
-
-                for(auto& force : forces)
-                    force.setZero();
             }
             // else throw error
             else
@@ -430,10 +443,11 @@ namespace SSAGES
 				}
 				else
 				{ //else if rank doesnt match, just pop 
-					if (!FFSConfigIDQueue.empty())
+					if (!FFSConfigIDQueue.empty() && (i % comm_.size()) == comm_.rank())
 						FFSConfigIDQueue.pop_front();
 				}
 			}
+			MPI_Barrier(comm_);
         }
         // ==============================
     }
